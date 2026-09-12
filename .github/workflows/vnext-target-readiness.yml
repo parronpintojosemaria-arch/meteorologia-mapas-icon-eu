@@ -1,0 +1,64 @@
+name: vNext · Preparar destino · ICON-EU · NO publica
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/vnext-target-readiness.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    name: Comprobar repositorio y backend vNext
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout destino
+        uses: actions/checkout@v4
+      - name: Validar destino
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "parronpintojosemaria-arch/meteorologia-mapas-icon-eu"
+          test -f README.md
+      - name: Descargar backend vNext público
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch vnext-mapas-profesional https://github.com/parronpintojosemaria-arch/meteorologia-mapas-backend.git backend
+      - name: Validar fuente ICON-EU
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f backend/scripts/vnext_icon_eu_preflight.py
+          test -f backend/scripts/icon_eu_surface_vnext_full_block.py
+          test -f backend/scripts/icon_eu_surface_operational_block.py
+          test -f backend/scripts/icon_eu_aloft_operational_block.py
+          test -f backend/scripts/icon_eu_operational_merge.py
+          python -m py_compile backend/scripts/vnext_icon_eu_preflight.py backend/scripts/icon_eu_operational_merge.py
+      - name: Crear informe de preparación
+        shell: bash
+        run: |
+          cat > target-readiness.json <<'JSON'
+          {
+            "schema": "vnext-target-readiness-1",
+            "status": "ready",
+            "model": "icon_eu",
+            "group": "full",
+            "expected_maps": 1488,
+            "production_changed": false,
+            "pages_enabled_by_this_workflow": false
+          }
+          JSON
+      - name: Subir informe
+        uses: actions/upload-artifact@v4
+        with:
+          name: vnext-target-readiness-icon-eu
+          path: target-readiness.json
+          retention-days: 7
+      - name: Protección
+        run: |
+          echo 'NO publica GitHub Pages.'
+          echo 'NO cambia WordPress.'
+          echo 'NO cambia current.json real.'
