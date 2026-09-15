@@ -1,0 +1,297 @@
+name: vNext · Candidato Pages · ICON-EU · 1.488 mapas
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/vnext-publish-candidate.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-icon-eu-candidate
+  cancel-in-progress: false
+
+jobs:
+  select-run:
+    name: Seleccionar pasada ICON-EU completa +120 h
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      run_utc: ${{ steps.pin.outputs.run_utc }}
+      cycle: ${{ steps.pin.outputs.cycle }}
+    steps:
+      - name: Checkout destino
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Descargar backend vNext
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch vnext-mapas-profesional \
+            https://github.com/parronpintojosemaria-arch/meteorologia-mapas-backend.git backend
+
+      - name: Dependencias mínimas selector
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compilar piezas ICON-EU
+        working-directory: backend
+        run: |
+          python -m py_compile scripts/icon_eu_operational_selector_phase55.py
+          python -m py_compile scripts/icon_eu_surface_vnext_full_block.py
+          python -m py_compile scripts/icon_eu_aloft_operational_block.py
+          python -m py_compile scripts/icon_eu_operational_merge.py
+          python -m py_compile scripts/vnext_current_guard.py
+
+      - id: pin
+        name: Elegir y fijar pasada completa
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/icon_eu_operational_selector_phase55.py
+          RUN_UTC=$(cat .icon-eu-run.txt)
+          CYCLE=$(python -c "from datetime import datetime; print(datetime.fromisoformat('$RUN_UTC').strftime('%Y%m%d%H'))")
+          echo "run_utc=$RUN_UTC" >> "$GITHUB_OUTPUT"
+          echo "cycle=$CYCLE" >> "$GITHUB_OUTPUT"
+          echo "ICON-EU pasada fijada: $RUN_UTC · ciclo URL: $CYCLE"
+
+  surface:
+    name: Superficie ${{ matrix.id }}
+    needs: select-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {id: s1, spec: '0:24:1', rule: '+0..+24 h cada 1 h'}
+          - {id: s2, spec: '25:48:1', rule: '+25..+48 h cada 1 h'}
+          - {id: s3, spec: '49:78:1', rule: '+49..+78 h cada 1 h'}
+          - {id: s4, spec: '81:120:3', rule: '+81..+120 h cada 3 h'}
+    env:
+      ICON_EU_RUN_UTC: ${{ needs.select-run.outputs.run_utc }}
+      ICON_EU_BLOCK_ID: ${{ matrix.id }}
+      ICON_EU_STEP_SPEC: ${{ matrix.spec }}
+      ICON_EU_STEP_RULE: ${{ matrix.rule }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Descargar backend vNext
+        run: |
+          git clone --depth 1 --branch vnext-mapas-profesional \
+            https://github.com/parronpintojosemaria-arch/meteorologia-mapas-backend.git backend
+      - name: Dependencias
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Generar bloque superficie
+        working-directory: backend
+        run: python scripts/icon_eu_surface_vnext_full_block.py
+      - name: Subir bloque temporal
+        uses: actions/upload-artifact@v4
+        with:
+          name: vnext-icon-eu-pages-surface-${{ matrix.id }}
+          path: backend/public-operational-${{ matrix.id }}/icon-eu/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+
+  aloft:
+    name: Niveles/Jet ${{ matrix.id }}
+    needs: select-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {id: a1, spec: '0:3:1', rule: '+0..+3 h cada 1 h'}
+          - {id: a2, spec: '4:15:1', rule: '+4..+15 h cada 1 h'}
+          - {id: a3, spec: '16:27:1', rule: '+16..+27 h cada 1 h'}
+          - {id: a4, spec: '28:39:1', rule: '+28..+39 h cada 1 h'}
+          - {id: a5, spec: '40:51:1', rule: '+40..+51 h cada 1 h'}
+          - {id: a6, spec: '52:63:1', rule: '+52..+63 h cada 1 h'}
+          - {id: a7, spec: '64:75:1', rule: '+64..+75 h cada 1 h'}
+          - {id: a8, spec: '76,77,78,81,84,87,90,93,96,99,102,105', rule: '+76..+78 h cada 1 h; +81..+105 h cada 3 h'}
+          - {id: a9, spec: '108:120:3', rule: '+108..+120 h cada 3 h'}
+    env:
+      ICON_EU_RUN_UTC: ${{ needs.select-run.outputs.run_utc }}
+      ICON_EU_BLOCK_ID: ${{ matrix.id }}
+      ICON_EU_STEP_SPEC: ${{ matrix.spec }}
+      ICON_EU_STEP_RULE: ${{ matrix.rule }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Descargar backend vNext
+        run: |
+          git clone --depth 1 --branch vnext-mapas-profesional \
+            https://github.com/parronpintojosemaria-arch/meteorologia-mapas-backend.git backend
+      - name: Dependencias
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Generar bloque niveles y Jet
+        working-directory: backend
+        run: python scripts/icon_eu_aloft_operational_block.py
+      - name: Subir bloque temporal
+        uses: actions/upload-artifact@v4
+        with:
+          name: vnext-icon-eu-pages-aloft-${{ matrix.id }}
+          path: backend/public-operational-${{ matrix.id }}/icon-eu/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+
+  build:
+    name: Ensamblar · validar 1.488 · preparar Pages
+    needs: [select-run, surface, aloft]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      cycle: ${{ needs.select-run.outputs.cycle }}
+    env:
+      ICON_EU_RUN_UTC: ${{ needs.select-run.outputs.run_utc }}
+      ICON_EU_MERGED_DIR: backend/merged/icon-eu
+      CYCLE: ${{ needs.select-run.outputs.cycle }}
+    steps:
+      - name: Checkout destino
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Descargar backend vNext
+        run: |
+          git clone --depth 1 --branch vnext-mapas-profesional \
+            https://github.com/parronpintojosemaria-arch/meteorologia-mapas-backend.git backend
+      - name: Dependencias de validación
+        working-directory: backend
+        run: pip install Pillow
+      - name: Descargar superficie
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vnext-icon-eu-pages-surface-*
+          path: backend/merged/icon-eu
+          merge-multiple: true
+      - name: Descargar niveles y Jet
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vnext-icon-eu-pages-aloft-*
+          path: backend/merged/icon-eu
+          merge-multiple: true
+      - name: Validar 1.488/1.488 con el ensamblador científico
+        working-directory: backend
+        env:
+          ICON_EU_MERGED_DIR: merged/icon-eu
+        run: python scripts/icon_eu_operational_merge.py
+      - name: Crear manifest vNext trazable y guard de tamaño Pages
+        working-directory: backend
+        env:
+          CYCLE: ${{ needs.select-run.outputs.cycle }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from PIL import Image
+          root=Path('merged/icon-eu')
+          webps=sorted(root.rglob('*.webp'))
+          assert len(webps)==1488, f'ICON-EU: {len(webps)} mapas, esperados 1488'
+          rows=[]; total=0
+          for p in webps:
+              b=p.stat().st_size
+              total += b
+              with Image.open(p) as im:
+                  width,height=im.size
+              h=hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              rows.append({'path':p.relative_to(root).as_posix(),'bytes':b,'width':width,'height':height,'sha256':h.hexdigest()})
+          mib=total/(1024*1024)
+          assert mib < 940.0, f'ICON-EU supera guard Pages: {mib:.2f} MiB'
+          science=json.loads((root/'manifest-icon-eu-operational.json').read_text(encoding='utf-8'))
+          assert science['status']=='ok' and science['summary']['total_maps']==1488
+          manifest={
+            'schema':'vnext-icon-eu-pages-1',
+            'model':'icon-eu',
+            'status':'ready',
+            'cycle':os.environ['CYCLE'],
+            'run_utc':science['run_utc'],
+            'data_provider':science['data_provider'],
+            'projection':science['projection'],
+            'expected_count':1488,
+            'total_bytes':total,
+            'image_mib':round(mib,2),
+            'production_changed':False,
+            'files':rows,
+          }
+          (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print(f'ICON-EU PAGES OK · 1488 mapas · {mib:.2f} MiB')
+          PY
+      - name: Preparar sitio candidato
+        working-directory: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "../site/cycles/$CYCLE"
+          cp -a merged/icon-eu/. "../site/cycles/$CYCLE/"
+          python scripts/vnext_current_guard.py \
+            --model icon-eu \
+            --cycle "$CYCLE" \
+            --cycle-dir merged/icon-eu \
+            --base-url 'https://parronpintojosemaria-arch.github.io/meteorologia-mapas-icon-eu' \
+            --output ../site/current.json
+          cat > ../site/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>Meteorología Interactiva · ICON-EU</title>
+          <h1>Meteorología Interactiva · ICON-EU</h1>
+          <p>Candidato vNext. Datos oficiales: DWD Open Data. 1.488 mapas hasta +120 h.</p>
+          <p><a href="current.json">current.json</a></p>
+          HTML
+          touch ../site/.nojekyll
+      - name: Guard final candidato
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          c=json.loads(Path('site/current.json').read_text())
+          assert c['status']=='ready' and c['model']=='icon-eu' and c['file_count']==1488
+          assert c['cycle']==os.environ['CYCLE']
+          m=Path('site/cycles',c['cycle'],'manifest.json')
+          assert m.is_file()
+          d=json.loads(m.read_text())
+          assert d['status']=='ready' and d['expected_count']==1488 and d['production_changed'] is False
+          print('CURRENT CANDIDATO ICON-EU OK',c['cycle'],c['file_count'])
+          PY
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Empaquetar candidato Pages
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+          retention-days: 1
+
+  deploy:
+    name: Publicar candidato aislado ICON-EU
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Desplegar Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
